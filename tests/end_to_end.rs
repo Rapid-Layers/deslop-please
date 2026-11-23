@@ -279,6 +279,18 @@ fn small_types_that_each_show_a_few_functions_are_not_shallow_however_many_they_
     assert_eq!(stats.code, Some(0));
 }
 
+/// The `clean` fixture's `src/socket/` in `workspace`, its `mod.rs` declaring
+/// `count` modules, each in a file of its own, before `mod_rs`.
+fn socket_parts(workspace: &Path, mod_rs: &str, count: usize) {
+    let socket = workspace.join("src/socket");
+    let declared: String = (1..=count).map(|n| format!("mod part{n};\n")).collect();
+    std::fs::write(socket.join("mod.rs"), declared + mod_rs).unwrap();
+    for n in 1..=count {
+        let part = format!("pub struct Part{n};\n");
+        std::fs::write(socket.join(format!("part{n}.rs")), part).unwrap();
+    }
+}
+
 #[test]
 fn a_long_file_and_a_wide_directory_are_reported_until_they_are_split() {
     let workspace = workspace("clean", None, "layout");
@@ -286,22 +298,12 @@ fn a_long_file_and_a_wide_directory_are_reported_until_they_are_split() {
     let original = std::fs::read_to_string(&kinds).unwrap();
     let padded = original.clone() + &"\n".repeat(2_000 - original.lines().count());
     std::fs::write(&kinds, &padded).unwrap();
-    let socket = workspace.join("src/socket");
-    let mod_rs = socket.join("mod.rs");
-    let socket_mod = std::fs::read_to_string(&mod_rs).unwrap();
-    let parts = |count: usize| {
-        let declared: String = (1..=count).map(|n| format!("mod part{n};\n")).collect();
-        std::fs::write(&mod_rs, declared + &socket_mod).unwrap();
-        for n in 1..=count {
-            let part = format!("pub struct Part{n};\n");
-            std::fs::write(socket.join(format!("part{n}.rs")), part).unwrap();
-        }
-    };
+    let socket_mod = std::fs::read_to_string(workspace.join("src/socket/mod.rs")).unwrap();
     // 2,000 lines, and 10 files: at the most, not past it.
-    parts(8);
+    socket_parts(&workspace, &socket_mod, 8);
     assert_eq!(keys(&workspace), Vec::<String>::new());
 
-    parts(9);
+    socket_parts(&workspace, &socket_mod, 9);
     std::fs::write(&kinds, padded + "pub struct Late;\n").unwrap();
     let result = run(&workspace, &[]);
     assert_eq!(result.code, Some(1));
@@ -321,6 +323,25 @@ fn a_long_file_and_a_wide_directory_are_reported_until_they_are_split() {
     assert_eq!(
         keys(&workspace),
         ["long-file src/kinds.rs", "wide-directory src/socket/"]
+    );
+}
+
+#[test]
+fn a_module_behind_a_cfg_that_rust_analyzer_leaves_off_counts_in_the_layout() {
+    let workspace = workspace("clean", None, "layout_behind_a_cfg");
+    let socket = workspace.join("src/socket");
+    let socket_mod = std::fs::read_to_string(socket.join("mod.rs")).unwrap();
+    let checks = "#[cfg(all(test, my_checks))]\nmod checks;\n".to_owned() + &socket_mod;
+    socket_parts(&workspace, &checks, 8);
+    std::fs::create_dir(socket.join("checks")).unwrap();
+    std::fs::write(socket.join("checks/mod.rs"), "mod long;\n").unwrap();
+    std::fs::write(socket.join("checks/long.rs"), "\n".repeat(2_001)).unwrap();
+    assert_eq!(
+        keys(&workspace),
+        [
+            "long-file src/socket/checks/long.rs",
+            "wide-directory src/socket/"
+        ]
     );
 }
 

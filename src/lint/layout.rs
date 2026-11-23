@@ -2,14 +2,15 @@
 //! reader takes in a directory by listing it and finds their way in a file by
 //! scrolling through it, so each has a most it holds. A directory's members
 //! are its Rust files and its directories that hold Rust files; a file's
-//! lines are all of them, blank and comment lines too; test code counts like
-//! any other. A directory concerns a crate or module when one of its files is
-//! below it.
+//! lines are all of them, blank and comment lines too. Test code counts like
+//! any other, and so does a module behind a `cfg` that rust-analyzer left
+//! off. A directory concerns a crate or module when one of its files is below
+//! it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Diagnostic, Lint, Location, Picture, in_scope, listed};
-use crate::model::{File, Model, NodeId};
+use crate::model::{Model, NodeId};
 
 /// The most files and directories one directory holds. Past ten names, a
 /// listing is searched rather than read, and its files want directories of
@@ -20,18 +21,37 @@ const MOST_MEMBERS: usize = 10;
 /// files of their own.
 const MOST_LINES: usize = 2_000;
 
+/// A module file, analyzed or not.
+struct ModuleFile<'m> {
+    path: &'m str,
+    lines: usize,
+    /// The module it is, or for one rust-analyzer left out, the analyzed
+    /// module that declares it.
+    module: NodeId,
+}
+
 pub fn check(model: &Model, scope: Option<NodeId>) -> Vec<Diagnostic> {
-    let concerned = |file: &File| in_scope(&model.tree, scope, file.module);
-    let mut diagnostics: Vec<Diagnostic> = model
-        .files
+    let analyzed = model.files.iter().map(|file| ModuleFile {
+        path: &file.path,
+        lines: file.lines,
+        module: file.module,
+    });
+    let unanalyzed = model.unanalyzed.iter().map(|file| ModuleFile {
+        path: &file.path,
+        lines: file.lines,
+        module: file.declared_in,
+    });
+    let files: Vec<ModuleFile> = analyzed.chain(unanalyzed).collect();
+    let concerned = |file: &ModuleFile| in_scope(&model.tree, scope, file.module);
+    let mut diagnostics: Vec<Diagnostic> = files
         .iter()
         .filter(|file| file.lines > MOST_LINES && concerned(file))
         .map(long_file)
         .collect();
     // By directory, its members, and whether a file below it is in scope.
     let mut directories: BTreeMap<&str, (BTreeSet<&str>, bool)> = BTreeMap::new();
-    for file in &model.files {
-        for (directory, member) in holders(&file.path) {
+    for file in &files {
+        for (directory, member) in holders(file.path) {
             let (members, below) = directories.entry(directory).or_default();
             members.insert(member);
             *below |= concerned(file);
@@ -41,7 +61,7 @@ pub fn check(model: &Model, scope: Option<NodeId>) -> Vec<Diagnostic> {
         directories
             .iter()
             .filter(|(_, (members, below))| *below && members.len() > MOST_MEMBERS)
-            .map(|(directory, (members, _))| wide_directory(model, directory, members)),
+            .map(|(directory, (members, _))| wide_directory(&files, directory, members)),
     );
     diagnostics
 }
@@ -62,16 +82,16 @@ fn holders(path: &str) -> impl Iterator<Item = (&str, &str)> {
     })
 }
 
-fn long_file(file: &File) -> Diagnostic {
+fn long_file(file: &ModuleFile) -> Diagnostic {
     Diagnostic {
         lint: Lint::LongFile,
-        key: file.path.clone(),
+        key: file.path.to_owned(),
         message: format!(
             "`{}` is long: it has {} lines, more than {MOST_LINES}",
             file.path, file.lines
         ),
         location: Some(Location {
-            file: file.path.clone(),
+            file: file.path.to_owned(),
             line: 1,
         }),
         notes: Vec::new(),
@@ -84,7 +104,11 @@ fn long_file(file: &File) -> Diagnostic {
 }
 
 /// The report of `directory`, which holds `members`.
-fn wide_directory(model: &Model, directory: &str, members: &BTreeSet<&str>) -> Diagnostic {
+fn wide_directory(
+    module_files: &[ModuleFile],
+    directory: &str,
+    members: &BTreeSet<&str>,
+) -> Diagnostic {
     let inside = if directory.is_empty() {
         String::new()
     } else {
@@ -117,7 +141,7 @@ fn wide_directory(model: &Model, directory: &str, members: &BTreeSet<&str>) -> D
         .filter(|name| members.contains(name))
         .map(|name| format!("{inside}{name}"))
         .chain(
-            (!directory.is_empty() && model.files.iter().any(|file| file.path == beside))
+            (!directory.is_empty() && module_files.iter().any(|file| file.path == beside))
                 .then_some(beside),
         )
         .next();
@@ -141,8 +165,8 @@ fn wide_directory(model: &Model, directory: &str, members: &BTreeSet<&str>) -> D
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::NodeKind;
     use crate::model::tests::Sample;
+    use crate::model::{NodeKind, Unanalyzed};
 
     /// A sample whose crate, `p`, has its root at `src/lib.rs`, and the
     /// crate's node.
@@ -260,6 +284,23 @@ mod tests {
         assert_eq!(keys(&sample, Some(modules[0])), both);
         assert_eq!(keys(&sample, Some(modules[1])), ["wide-directory src/"]);
         assert_eq!(keys(&sample, Some(q)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_file_rust_analyzer_left_out_counts_and_concerns_the_module_declaring_it() {
+        let (mut sample, _) = crate_p();
+        let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+        let modules: Vec<NodeId> = names.iter().map(|name| sample.module(name)).collect();
+        assert_eq!(keys(&sample, None), Vec::<String>::new());
+        sample.model.unanalyzed.push(Unanalyzed {
+            path: "src/a/checks.rs".into(),
+            declared_in: modules[0],
+            lines: 2_001,
+        });
+        let both = ["long-file src/a/checks.rs", "wide-directory src/"];
+        assert_eq!(keys(&sample, None), both);
+        assert_eq!(keys(&sample, Some(modules[0])), both);
+        assert_eq!(keys(&sample, Some(modules[1])), ["wide-directory src/"]);
     }
 
     #[test]

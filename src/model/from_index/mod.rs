@@ -6,13 +6,14 @@ mod forwarders;
 mod impls;
 mod source;
 mod targets;
+mod unanalyzed;
 mod wrappers;
 
 use std::collections::{HashMap, HashSet};
 
 use crate::Error;
 use crate::model::{
-    File, FileId, Item, ItemId, ItemKind, Model, NodeId, NodeKind, Reference, Tree,
+    File, FileId, Item, ItemId, ItemKind, Model, NodeId, NodeKind, Reference, Tree, Unanalyzed,
 };
 use crate::scip::{Document, Impl, Index, Kind, Occurrence, Place, Range, Symbol};
 use crate::workspace::{Package, Workspace};
@@ -24,7 +25,8 @@ pub fn build(index: &Index, workspace: &Workspace) -> Result<Model, Error> {
     for document in &index.documents {
         builder.add_document(document)?;
     }
-    Ok(builder.finish(index))
+    let unanalyzed = builder.unanalyzed()?;
+    Ok(builder.finish(index, unanalyzed))
 }
 
 fn is_test_module(name: &str) -> bool {
@@ -92,8 +94,25 @@ impl<'a> Builder<'a> {
         builder
     }
 
+    /// The module files the documents declare that the index lacks.
+    fn unanalyzed(&self) -> Result<Vec<Unanalyzed>, Error> {
+        let analyzed: Vec<unanalyzed::Analyzed> = self
+            .units
+            .iter()
+            .map(|unit| {
+                let file = &self.files[unit.file.index()];
+                unanalyzed::Analyzed {
+                    path: &file.path,
+                    module: file.module,
+                    source: &unit.source,
+                }
+            })
+            .collect();
+        unanalyzed::find(&analyzed, self.workspace)
+    }
+
     /// The model, once every document is in.
-    fn finish(mut self, index: &Index) -> Model {
+    fn finish(mut self, index: &Index, unanalyzed: Vec<Unanalyzed>) -> Model {
         self.read_symbol_information(index);
         self.mark_test_code();
         self.place_in_types();
@@ -102,6 +121,7 @@ impl<'a> Builder<'a> {
         Model {
             tree: self.tree,
             files: self.files,
+            unanalyzed,
             items: self.items,
             references: self.references,
             wrappers,

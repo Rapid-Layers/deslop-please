@@ -14,8 +14,12 @@ use std::collections::HashMap;
 #[derive(Debug, Default)]
 pub struct Model {
     pub tree: Tree,
-    /// By [`FileId`].
+    /// By [`FileId`]: the files rust-analyzer analyzed.
     pub files: Vec<File>,
+    /// The module files rust-analyzer left out, which only a `cfg` it left
+    /// off declares: a feature, a target, a cfg of the workspace's own. Only
+    /// the layout reads them.
+    pub unanalyzed: Vec<Unanalyzed>,
     /// By [`ItemId`].
     pub items: Vec<Item>,
     pub references: Vec<Reference>,
@@ -35,6 +39,15 @@ pub struct File {
     pub module: NodeId,
     pub test: bool,
     /// Every line of its text, blank and comment lines too.
+    pub lines: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Unanalyzed {
+    pub path: String,
+    /// The analyzed module that declares it, or that declares the
+    /// unanalyzed module that does.
+    pub declared_in: NodeId,
     pub lines: usize,
 }
 

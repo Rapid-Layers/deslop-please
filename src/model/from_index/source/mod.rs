@@ -1,12 +1,15 @@
 //! What the index leaves out, read from a file's text. The index says which
 //! names a file writes and what each resolves to, but not the syntax around
 //! them: which names are in `use` declarations, which type an `impl` block
-//! is for, and whether a function's body computes anything.
+//! is for, whether a function's body computes anything, and which modules a
+//! `cfg` it left off declares.
 
+mod modules;
 mod operators;
 mod tokens;
 mod uses;
 
+pub use modules::Declared;
 pub use uses::{Access, Plain};
 
 use crate::scip::{Position, Range};
