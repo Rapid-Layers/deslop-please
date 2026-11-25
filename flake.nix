@@ -14,7 +14,7 @@
       flake-utils,
       ...
     }:
-    flake-utils.lib.eachSystem [ "x86_64-linux" ] (
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-darwin" ] (
       system:
       let
         pkgs = import nixpkgs {
@@ -33,6 +33,19 @@
         };
       in
       {
+        # Built by .github/workflows/nix.yml into rapid-layers.cachix.org; it runs `rust-analyzer scip`, so that comes with it.
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "deslop-please";
+          version = "0.1.4";
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          doCheck = false;
+          postFixup = ''
+            wrapProgram $out/bin/deslop-please --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.rust-analyzer ]}
+          '';
+        };
+
         devShells.default = pkgs.mkShell {
           packages = [ rustToolchain ];
         };
